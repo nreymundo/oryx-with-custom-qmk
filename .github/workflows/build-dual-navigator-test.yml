@@ -8,6 +8,7 @@ on:
     paths:
       - emVdK/config.h
       - emVdK/keymap.json
+      - emVdK/rules.mk
       - scripts/patch-voyager-dual-hid.py
       - .github/workflows/build-dual-navigator-test.yml
 
@@ -54,6 +55,7 @@ jobs:
           grep -q '"openrgb"' emVdK/keymap.json
           grep -q 'NAVIGATOR_TRACKBALL_ROTATION 325' emVdK/config.h
           grep -q 'NAVIGATOR_TRACKPAD_ROTATION 0' emVdK/config.h
+          grep -q '^MOUSE_SHARED_EP = yes$' emVdK/rules.mk
 
           # OpenRGB remains on stock QMK Raw HID; Oryx remains on the second HID.
           grep -q 'void raw_hid_receive(uint8_t \*data, uint8_t length)' \
