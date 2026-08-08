@@ -2,6 +2,12 @@ name: Build dual-HID Voyager
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/patch-dual-hid-v2.py
+      - .github/workflows/build-dual-hid-voyager.yml
 
 permissions:
   contents: read
