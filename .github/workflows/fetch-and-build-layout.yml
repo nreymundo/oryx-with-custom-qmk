@@ -43,10 +43,15 @@ jobs:
       - name: Download layout source
         id: download-layout-source
         run: |
-          response=$(curl --location 'https://oryx.zsa.io/graphql' --header 'Content-Type: application/json' --data '{"query":"query getLayout($hashId: String!, $revisionId: String!, $geometry: String) {layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) {  revision { hashId, qmkVersion, title }}}","variables":{"hashId":"${{ github.event.inputs.layout_id }}","geometry":"${{ github.event.inputs.layout_geometry }}","revisionId":"latest"}}' | jq '.data.layout.revision | [.hashId, .qmkVersion, .title]')
+          response=$(curl --location 'https://oryx.zsa.io/graphql' \
+            --header 'Content-Type: application/json' \
+            --data '{"query":"query getLayout($hashId: String!, $revisionId: String!, $geometry: String) {layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) { revision { hashId, qmkVersion, title }}}","variables":{"hashId":"${{ github.event.inputs.layout_id }}","geometry":"${{ github.event.inputs.layout_geometry }}","revisionId":"latest"}}' \
+            | jq '.data.layout.revision | [.hashId, .qmkVersion, .title]')
+
           hash_id=$(echo "${response}" | jq -r '.[0]')
           firmware_version=$(printf "%.0f" $(echo "${response}" | jq -r '.[1]'))
           change_description=$(echo "${response}" | jq -r '.[2]')
+
           if [[ -z "${change_description}" ]]; then
             change_description="latest layout modification made with Oryx"
           fi
@@ -81,10 +86,13 @@ jobs:
       - name: Update QMK firmware submodule to latest version (${{ steps.download-layout-source.outputs.firmware_version }})
         run: |
           git submodule update --init --remote --depth=1 --no-single-branch
+
           cd qmk_firmware
-          git checkout -B firmware${{ steps.download-layout-source.outputs.firmware_version }} origin/firmware${{ steps.download-layout-source.outputs.firmware_version }}
+          git checkout -B firmware${{ steps.download-layout-source.outputs.firmware_version }} \
+            origin/firmware${{ steps.download-layout-source.outputs.firmware_version }}
           git submodule update --init --recursive
           cd ..
+
           git add qmk_firmware
           git commit -m "✨(qmk): Update firmware" || echo "No QMK change"
           git push
@@ -92,11 +100,43 @@ jobs:
       - name: Install QMK-OpenRGB module
         run: |
           rm -rf qmk_firmware/modules/openrgb
+
           git clone \
             --depth 1 \
             --branch module_revD \
             https://gitlab.com/OpenRGBDevelopers/QMK-OpenRGB.git \
             qmk_firmware/modules/openrgb
+
+      # Temporary smoke-test patch:
+      #
+      # Both ZSA's Oryx module and QMK-OpenRGB implement QMK's
+      # raw_hid_receive() callback. That produces a duplicate-symbol
+      # linker error.
+      #
+      # For this test build we rename the Oryx callback so OpenRGB owns
+      # Raw HID exclusively. Normal keyboard functionality remains, but
+      # Keymapp/Kontroll host communication will not work while this
+      # firmware is flashed.
+      - name: Give Raw HID to OpenRGB for smoke test
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("qmk_firmware/modules/zsa/oryx/oryx.c")
+          source = path.read_text()
+
+          old = "void raw_hid_receive(uint8_t *data, uint8_t length) {"
+          new = "void oryx_raw_hid_receive(uint8_t *data, uint8_t length) {"
+
+          count = source.count(old)
+
+          if count != 1:
+              raise SystemExit(
+                  f"Expected exactly one Oryx raw_hid_receive definition, found {count}"
+              )
+
+          path.write_text(source.replace(old, new, 1))
+          PY
 
       - name: Build qmk docker image
         run: docker build -t qmk .
@@ -115,17 +155,31 @@ jobs:
 
           # Copy layout files to the qmk folder
           rm -rf ${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps/${{ github.event.inputs.layout_id }}
-          mkdir -p ${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps && cp -r ${{ github.event.inputs.layout_id }} "$_"
+          mkdir -p ${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps
+          cp -r ${{ github.event.inputs.layout_id }} \
+            ${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps/
 
           # Build the layout
-          docker run -v ./qmk_firmware:/root --rm qmk /bin/sh -c "
-            qmk setup zsa/qmk_firmware -b firmware${{ steps.download-layout-source.outputs.firmware_version }} -y
-            make ${make_prefix}${{ github.event.inputs.layout_geometry }}:${{ github.event.inputs.layout_id }}
-          "
+          docker run \
+            -v ./qmk_firmware:/root \
+            --rm \
+            qmk \
+            /bin/sh -c "
+              qmk setup zsa/qmk_firmware \
+                -b firmware${{ steps.download-layout-source.outputs.firmware_version }} \
+                -y
+
+              make ${make_prefix}${{ github.event.inputs.layout_geometry }}:${{ github.event.inputs.layout_id }}
+            "
 
           # Find and export built layout
           normalized_layout_geometry="$(echo "${{ github.event.inputs.layout_geometry }}" | sed 's/\//_/g')"
-          echo built_layout_file=$(find ./qmk_firmware -maxdepth 1 -type f -regex ".*${normalized_layout_geometry}.*\.\(bin\|hex\)$") >> "$GITHUB_OUTPUT"
+
+          echo built_layout_file=$(find ./qmk_firmware \
+            -maxdepth 1 \
+            -type f \
+            -regex ".*${normalized_layout_geometry}.*\.\(bin\|hex\)$") >> "$GITHUB_OUTPUT"
+
           echo normalized_layout_geometry=${normalized_layout_geometry} >> "$GITHUB_OUTPUT"
 
       - name: Upload layout
