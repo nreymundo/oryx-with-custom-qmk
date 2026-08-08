@@ -11,6 +11,21 @@ Each time you run the GitHub Action, the workflow will:
 2. Merge them with any QMK features you've added in the source code.
 3. Build the firmware, incorporating modifications from both Oryx and your custom source code.
 
+## Voyager OpenRGB + Keymapp
+
+This fork adds native QMK-OpenRGB support to the Voyager while keeping ZSA Keymapp and the `kontroll` API usable at the same time.
+
+The firmware exposes two HID interfaces:
+
+- Interface 1: QMK-OpenRGB, using the standard 64-byte QMK OpenRGB protocol expected by stock OpenRGB.
+- Interface 2: ZSA Oryx/Keymapp, using its original 32-byte protocol.
+
+No OpenRGB fork or application patch is required. The normal **Fetch and build layout** workflow installs the QMK-OpenRGB community module and applies `scripts/patch-voyager-dual-hid.py` automatically for Voyager builds.
+
+The layout must keep `"openrgb"` in its `keymap.json` module list. The workflow validates this before compiling.
+
+For OpenRGB, add the Voyager once as a manual **QMK (OpenRGB Protocol)** device with USB VID `3297` and PID `1977`, then restart OpenRGB. Keymapp and `kontroll` continue to discover the separate Oryx HID interface normally.
+
 ## How to use
 
 1. Fork this repository (be sure to **uncheck the "Copy the main branch only" option**).
@@ -25,7 +40,7 @@ Each time you run the GitHub Action, the workflow will:
    - Edit `config.h`, `keymap.c` and `rules.mk` according to the [QMK documentation](https://github.com/qmk/qmk_firmware/tree/master/docs/features).
    - Commit and push to the **main** branch.
 5. You can continue editing your layout through Oryx:
-   - Make your changes in Oryx. 
+   - Make your changes in Oryx.
    - Optionally, add a description of your changes in the **Some notes about what you changed** field; if provided, this will be used as commit message.
    - Confirm changes by clicking the **Compile this layout** button.
 6. To build the firmware (including both Oryx and code modifications), rerun the GitHub Action. The firmware will be available for download in the action’s artifacts.
