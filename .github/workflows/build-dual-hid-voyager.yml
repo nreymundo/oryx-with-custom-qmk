@@ -46,10 +46,16 @@ jobs:
 
       - name: Validate dual-HID source tree
         run: |
-          grep -q 'OPENRGB_INTERFACE' qmk_firmware/tmk_core/protocol/usb_descriptor.h
-          grep -q 'USB_ENDPOINT_IN_OPENRGB' qmk_firmware/tmk_core/protocol/chibios/usb_endpoints.c
-          grep -q 'openrgb_hid_task' qmk_firmware/tmk_core/protocol/chibios/usb_main.c
-          grep -q 'openrgb_raw_hid_receive' qmk_firmware/modules/openrgb/openrgb.c
+          # OpenRGB must remain on QMK's normal Raw HID path.
+          grep -q 'void raw_hid_receive(uint8_t \*data, uint8_t length)' qmk_firmware/modules/openrgb/openrgb.c
+
+          # Oryx must have its own interface, endpoints and receive handler.
+          grep -q 'ORYX_INTERFACE' qmk_firmware/tmk_core/protocol/usb_descriptor.h
+          grep -q 'USB_ENDPOINT_IN_ORYX' qmk_firmware/tmk_core/protocol/chibios/usb_endpoints.c
+          grep -q 'oryx_hid_task' qmk_firmware/tmk_core/protocol/chibios/usb_main.c
+          grep -q 'void oryx_hid_receive(uint8_t \*data, uint8_t length)' qmk_firmware/modules/zsa/oryx/oryx.c
+
+          # The layout must still enable the OpenRGB community module.
           grep -q '"openrgb"' emVdK/keymap.json
 
       - name: Build QMK Docker image
