@@ -1,0 +1,93 @@
+name: Build dual Navigator Voyager test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - test/dual-navigator
+    paths:
+      - emVdK/config.h
+      - emVdK/keymap.json
+      - scripts/patch-voyager-dual-hid.py
+      - .github/workflows/build-dual-navigator-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-dual-navigator:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v5
+        with:
+          ref: test/dual-navigator
+          fetch-depth: 1
+
+      - name: Initialize ZSA QMK firmware25
+        run: |
+          git submodule update --init --remote --depth=1 --no-single-branch
+          cd qmk_firmware
+          git checkout -B firmware25 origin/firmware25
+          git submodule update --init --recursive
+          cd ..
+
+      - name: Install QMK-OpenRGB module
+        run: |
+          rm -rf qmk_firmware/modules/openrgb
+          git clone \
+            --depth 1 \
+            --branch module_revD \
+            https://gitlab.com/OpenRGBDevelopers/QMK-OpenRGB.git \
+            qmk_firmware/modules/openrgb
+          echo "QMK-OpenRGB commit: $(git -C qmk_firmware/modules/openrgb rev-parse HEAD)"
+
+      - name: Apply OpenRGB and Keymapp dual-HID patch
+        run: |
+          python3 scripts/patch-voyager-dual-hid.py qmk_firmware
+
+      - name: Validate test configuration
+        run: |
+          grep -q '"zsa/navigator_trackball"' emVdK/keymap.json
+          grep -q '"zsa/navigator_trackpad"' emVdK/keymap.json
+          grep -q '"openrgb"' emVdK/keymap.json
+          grep -q 'NAVIGATOR_TRACKBALL_ROTATION 325' emVdK/config.h
+          grep -q 'NAVIGATOR_TRACKPAD_ROTATION 0' emVdK/config.h
+
+          # OpenRGB remains on stock QMK Raw HID; Oryx remains on the second HID.
+          grep -q 'void raw_hid_receive(uint8_t \*data, uint8_t length)' \
+            qmk_firmware/modules/openrgb/openrgb.c
+          grep -q 'void oryx_hid_receive(uint8_t \*data, uint8_t length)' \
+            qmk_firmware/modules/zsa/oryx/oryx.c
+
+      - name: Build QMK Docker image
+        run: docker build -t qmk .
+
+      - name: Install layout into QMK tree
+        run: |
+          rm -rf qmk_firmware/keyboards/zsa/voyager/keymaps/emVdK
+          mkdir -p qmk_firmware/keyboards/zsa/voyager/keymaps
+          cp -r emVdK qmk_firmware/keyboards/zsa/voyager/keymaps/
+
+      - name: Build Voyager firmware
+        run: |
+          docker run \
+            -v ./qmk_firmware:/root \
+            --rm \
+            qmk \
+            /bin/sh -c '
+              qmk setup zsa/qmk_firmware -b firmware25 -y
+              make zsa/voyager:emVdK
+            '
+
+      - name: Show built firmware
+        run: |
+          find qmk_firmware -maxdepth 1 -type f -name '*voyager*.bin' -ls
+
+      - name: Upload test firmware
+        uses: actions/upload-artifact@v7
+        with:
+          name: voyager_emVdK_openrgb_trackball_right_trackpad_left
+          path: qmk_firmware/*voyager*.bin
+          if-no-files-found: error
