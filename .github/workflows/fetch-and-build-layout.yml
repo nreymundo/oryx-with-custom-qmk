@@ -23,9 +23,16 @@ on:
           - planck_ez
           - planck_ez/glow
         default: voyager
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/fetch-and-build-layout.yml
 
 env:
   QMK_OPENRGB_REF: module_revD
+  LAYOUT_ID: ${{ github.event.inputs.layout_id || 'emVdK' }}
+  LAYOUT_GEOMETRY: ${{ github.event.inputs.layout_geometry || 'voyager' }}
 
 permissions:
   contents: write
@@ -46,7 +53,7 @@ jobs:
         run: |
           response=$(curl --fail --silent --show-error --location 'https://oryx.zsa.io/graphql' \
             --header 'Content-Type: application/json' \
-            --data '{"query":"query getLayout($hashId: String!, $revisionId: String!, $geometry: String) {layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) { revision { hashId, qmkVersion, title }}}","variables":{"hashId":"${{ github.event.inputs.layout_id }}","geometry":"${{ github.event.inputs.layout_geometry }}","revisionId":"latest"}}')
+            --data '{"query":"query getLayout($hashId: String!, $revisionId: String!, $geometry: String) {layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) { revision { hashId, qmkVersion, title }}}","variables":{"hashId":"'"${LAYOUT_ID}"'","geometry":"'"${LAYOUT_GEOMETRY}"'","revisionId":"latest"}}')
 
           hash_id=$(echo "${response}" | jq -r '.data.layout.revision.hashId')
           firmware_version=$(printf '%.0f' "$(echo "${response}" | jq -r '.data.layout.revision.qmkVersion')")
@@ -68,9 +75,9 @@ jobs:
             "https://oryx.zsa.io/source/${hash_id}" \
             -o source.zip
 
-          rm -rf "${{ github.event.inputs.layout_id }}"
-          mkdir -p "${{ github.event.inputs.layout_id }}"
-          unzip -oj source.zip '*_source/*' -d "${{ github.event.inputs.layout_id }}"
+          rm -rf "${LAYOUT_ID}"
+          mkdir -p "${LAYOUT_ID}"
+          unzip -oj source.zip '*_source/*' -d "${LAYOUT_ID}"
           rm source.zip
 
           echo "hash_id=${hash_id}" >> "$GITHUB_OUTPUT"
@@ -83,7 +90,7 @@ jobs:
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
-          git add "${{ github.event.inputs.layout_id }}"
+          git add "${LAYOUT_ID}"
           if ! git diff --cached --quiet; then
             printf "✨(oryx): %s\n" "$CHANGE_DESCRIPTION" | git commit -F -
             git push origin HEAD:oryx
@@ -95,18 +102,19 @@ jobs:
         run: |
           git fetch origin main
           git checkout -B main origin/main
-          rm -rf "${{ github.event.inputs.layout_id }}"
-          git checkout oryx -- "${{ github.event.inputs.layout_id }}"
+          rm -rf "${LAYOUT_ID}"
+          git checkout oryx -- "${LAYOUT_ID}"
 
       - name: Apply Voyager custom configuration
-        if: ${{ github.event.inputs.layout_geometry == 'voyager' }}
+        if: ${{ env.LAYOUT_GEOMETRY == 'voyager' }}
         run: |
           python3 - <<'PY'
           import json
+          import os
           import re
           from pathlib import Path
 
-          layout = Path("${{ github.event.inputs.layout_id }}")
+          layout = Path(os.environ["LAYOUT_ID"])
 
           keymap_json = layout / "keymap.json"
           data = json.loads(keymap_json.read_text())
@@ -155,7 +163,7 @@ jobs:
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
-          git add "${{ github.event.inputs.layout_id }}"
+          git add "${LAYOUT_ID}"
           git commit -m "✨(layout): Refresh from Oryx with custom QMK settings" || echo "No customized layout change"
           git push origin HEAD:main
 
@@ -174,7 +182,7 @@ jobs:
           git push origin HEAD:main
 
       - name: Install QMK-OpenRGB module
-        if: ${{ github.event.inputs.layout_geometry == 'voyager' }}
+        if: ${{ env.LAYOUT_GEOMETRY == 'voyager' }}
         run: |
           rm -rf qmk_firmware/modules/openrgb
           git clone \
@@ -185,21 +193,19 @@ jobs:
           echo "QMK-OpenRGB commit: $(git -C qmk_firmware/modules/openrgb rev-parse HEAD)"
 
       - name: Apply Voyager dual-HID patch
-        if: ${{ github.event.inputs.layout_geometry == 'voyager' }}
+        if: ${{ env.LAYOUT_GEOMETRY == 'voyager' }}
         run: |
           python3 scripts/patch-voyager-dual-hid.py qmk_firmware
 
       - name: Validate Voyager custom integration
-        if: ${{ github.event.inputs.layout_geometry == 'voyager' }}
+        if: ${{ env.LAYOUT_GEOMETRY == 'voyager' }}
         run: |
-          layout="${{ github.event.inputs.layout_id }}"
-
-          grep -q '"zsa/navigator_trackball"' "${layout}/keymap.json"
-          grep -q '"zsa/navigator_trackpad"' "${layout}/keymap.json"
-          grep -q '"openrgb"' "${layout}/keymap.json"
-          grep -q 'NAVIGATOR_TRACKBALL_ROTATION 325' "${layout}/config.h"
-          grep -q 'NAVIGATOR_TRACKPAD_ROTATION 0' "${layout}/config.h"
-          grep -q '^MOUSE_SHARED_EP = yes$' "${layout}/rules.mk"
+          grep -q '"zsa/navigator_trackball"' "${LAYOUT_ID}/keymap.json"
+          grep -q '"zsa/navigator_trackpad"' "${LAYOUT_ID}/keymap.json"
+          grep -q '"openrgb"' "${LAYOUT_ID}/keymap.json"
+          grep -q 'NAVIGATOR_TRACKBALL_ROTATION 325' "${LAYOUT_ID}/config.h"
+          grep -q 'NAVIGATOR_TRACKPAD_ROTATION 0' "${LAYOUT_ID}/config.h"
+          grep -q '^MOUSE_SHARED_EP = yes$' "${LAYOUT_ID}/rules.mk"
 
           # Stock OpenRGB remains on QMK Raw HID / interface 1.
           grep -q 'void raw_hid_receive(uint8_t \*data, uint8_t length)' \
@@ -226,10 +232,10 @@ jobs:
             make_prefix=""
           fi
 
-          rm -rf "${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps/${{ github.event.inputs.layout_id }}"
-          mkdir -p "${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps"
-          cp -r "${{ github.event.inputs.layout_id }}" \
-            "${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps/"
+          rm -rf "${keyboard_directory}/${LAYOUT_GEOMETRY}/keymaps/${LAYOUT_ID}"
+          mkdir -p "${keyboard_directory}/${LAYOUT_GEOMETRY}/keymaps"
+          cp -r "${LAYOUT_ID}" \
+            "${keyboard_directory}/${LAYOUT_GEOMETRY}/keymaps/"
 
           docker run \
             -v ./qmk_firmware:/root \
@@ -240,10 +246,10 @@ jobs:
                 -b firmware${{ steps.download-layout-source.outputs.firmware_version }} \
                 -y
 
-              make ${make_prefix}${{ github.event.inputs.layout_geometry }}:${{ github.event.inputs.layout_id }}
+              make ${make_prefix}${LAYOUT_GEOMETRY}:${LAYOUT_ID}
             "
 
-          normalized_layout_geometry="$(echo "${{ github.event.inputs.layout_geometry }}" | sed 's/\//_/g')"
+          normalized_layout_geometry="$(echo "${LAYOUT_GEOMETRY}" | sed 's/\//_/g')"
 
           echo built_layout_file=$(find ./qmk_firmware \
             -maxdepth 1 \
@@ -255,6 +261,6 @@ jobs:
       - name: Upload layout
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.build-layout.outputs.normalized_layout_geometry }}_${{ github.event.inputs.layout_id }}
+          name: ${{ steps.build-layout.outputs.normalized_layout_geometry }}_${{ env.LAYOUT_ID }}
           path: ${{ steps.build-layout.outputs.built_layout_file }}
           if-no-files-found: error
