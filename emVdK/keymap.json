@@ -4,6 +4,7 @@
         "zsa/navigator_trackball",
         "zsa/automouse",
         "zsa/defaults",
-	"openrgb"
+        "zsa/navigator_trackpad",
+        "openrgb"
     ]
 }
