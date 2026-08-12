@@ -51,6 +51,13 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   ),
 };
 
+const char chordal_hold_layout[MATRIX_ROWS][MATRIX_COLS] PROGMEM = LAYOUT(
+  'L', 'L', 'L', 'L', 'L', 'L', 'R', 'R', 'R', 'R', 'R', 'R', 
+  'L', 'L', 'L', 'L', 'L', 'L', 'R', 'R', 'R', 'R', 'R', 'R', 
+  'L', 'L', 'L', 'L', 'L', 'L', 'R', 'R', 'R', 'R', 'R', 'R', 
+  'L', 'L', 'L', 'L', 'L', 'L', 'R', 'R', 'R', 'R', 'R', 'R', 
+  '*', '*', '*', '*'
+);
 
 const uint16_t PROGMEM combo0[] = { MT(MOD_LCTL, KC_SPACE), LT(1, KC_BSPC), COMBO_END};
 const uint16_t PROGMEM combo1[] = { LT(2, KC_SPACE), KC_BSPC, COMBO_END};
@@ -60,6 +67,18 @@ combo_t key_combos[COMBO_COUNT] = {
     COMBO(combo1, KC_DELETE),
 };
 
+uint16_t get_tapping_term(uint16_t keycode, keyrecord_t *record) {
+    switch (keycode) {
+        case TD(DANCE_0):
+            return TAPPING_TERM -60;
+        case LT(1, KC_BSPC):
+            return TAPPING_TERM -30;
+        case LT(2, KC_SPACE):
+            return TAPPING_TERM -30;
+        default:
+            return TAPPING_TERM;
+    }
+}
 
 
 
