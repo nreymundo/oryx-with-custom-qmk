@@ -35,70 +35,143 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Oryx source branch
         uses: actions/checkout@v5
         with:
           ref: oryx
+          fetch-depth: 0
 
-      - name: Download the full history for the merge to work correctly
-        run: git pull --unshallow
-
-      - name: Download layout source
+      - name: Download latest Oryx layout source
         id: download-layout-source
         run: |
-          response=$(curl --location 'https://oryx.zsa.io/graphql' \
+          response=$(curl --fail --silent --show-error --location 'https://oryx.zsa.io/graphql' \
             --header 'Content-Type: application/json' \
-            --data '{"query":"query getLayout($hashId: String!, $revisionId: String!, $geometry: String) {layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) { revision { hashId, qmkVersion, title }}}","variables":{"hashId":"${{ github.event.inputs.layout_id }}","geometry":"${{ github.event.inputs.layout_geometry }}","revisionId":"latest"}}' \
-            | jq '.data.layout.revision | [.hashId, .qmkVersion, .title]')
+            --data '{"query":"query getLayout($hashId: String!, $revisionId: String!, $geometry: String) {layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) { revision { hashId, qmkVersion, title }}}","variables":{"hashId":"${{ github.event.inputs.layout_id }}","geometry":"${{ github.event.inputs.layout_geometry }}","revisionId":"latest"}}')
 
-          hash_id=$(echo "${response}" | jq -r '.[0]')
-          firmware_version=$(printf "%.0f" $(echo "${response}" | jq -r '.[1]'))
-          change_description=$(echo "${response}" | jq -r '.[2]')
+          hash_id=$(echo "${response}" | jq -r '.data.layout.revision.hashId')
+          firmware_version=$(printf '%.0f' "$(echo "${response}" | jq -r '.data.layout.revision.qmkVersion')")
+          change_description=$(echo "${response}" | jq -r '.data.layout.revision.title')
 
-          if [[ -z "${change_description}" ]]; then
+          test -n "${hash_id}"
+          test "${hash_id}" != "null"
+          test -n "${firmware_version}"
+
+          if [[ -z "${change_description}" || "${change_description}" == "null" ]]; then
             change_description="latest layout modification made with Oryx"
           fi
 
-          curl -L "https://oryx.zsa.io/source/${hash_id}" -o source.zip
+          echo "Oryx revision: ${hash_id}"
+          echo "Oryx QMK firmware: firmware${firmware_version}"
+          echo "Oryx title: ${change_description}"
 
-          echo firmware_version=${firmware_version} >> "$GITHUB_OUTPUT"
-          echo change_description=${change_description} >> "$GITHUB_OUTPUT"
+          curl --fail --silent --show-error --location \
+            "https://oryx.zsa.io/source/${hash_id}" \
+            -o source.zip
 
-      - name: Unzip the source file
-        run: |
-          unzip -oj source.zip '*_source/*' -d ${{ github.event.inputs.layout_id }}
+          rm -rf "${{ github.event.inputs.layout_id }}"
+          mkdir -p "${{ github.event.inputs.layout_id }}"
+          unzip -oj source.zip '*_source/*' -d "${{ github.event.inputs.layout_id }}"
           rm source.zip
 
-      - name: Commit and Push changes
+          echo "hash_id=${hash_id}" >> "$GITHUB_OUTPUT"
+          echo "firmware_version=${firmware_version}" >> "$GITHUB_OUTPUT"
+          echo "change_description=${change_description}" >> "$GITHUB_OUTPUT"
+
+      - name: Save pristine Oryx source
         env:
           CHANGE_DESCRIPTION: ${{ steps.download-layout-source.outputs.change_description }}
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
-          git add .
-          printf "✨(oryx): %s\n" "$CHANGE_DESCRIPTION" | git commit -F - || echo "No layout change"
-          git push
+          git add "${{ github.event.inputs.layout_id }}"
+          if ! git diff --cached --quiet; then
+            printf "✨(oryx): %s\n" "$CHANGE_DESCRIPTION" | git commit -F -
+            git push origin HEAD:oryx
+          else
+            echo "Oryx source unchanged"
+          fi
 
-      - name: Merge Oryx with custom QMK
+      - name: Replace main layout with latest Oryx source
         run: |
           git fetch origin main
           git checkout -B main origin/main
-          git merge -Xignore-all-space oryx
-          git push
+          rm -rf "${{ github.event.inputs.layout_id }}"
+          git checkout oryx -- "${{ github.event.inputs.layout_id }}"
 
-      - name: Update QMK firmware submodule to latest version (${{ steps.download-layout-source.outputs.firmware_version }})
+      - name: Apply Voyager custom configuration
+        if: ${{ github.event.inputs.layout_geometry == 'voyager' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          layout = Path("${{ github.event.inputs.layout_id }}")
+
+          keymap_json = layout / "keymap.json"
+          data = json.loads(keymap_json.read_text())
+          modules = data.setdefault("modules", [])
+          for module in (
+              "zsa/oryx",
+              "zsa/navigator_trackball",
+              "zsa/navigator_trackpad",
+              "zsa/automouse",
+              "zsa/defaults",
+              "openrgb",
+          ):
+              if module not in modules:
+                  modules.append(module)
+          keymap_json.write_text(json.dumps(data, indent=4) + "\n")
+
+          config = layout / "config.h"
+          text = config.read_text()
+          for name, value in (
+              ("NAVIGATOR_TRACKBALL_ROTATION", "325"),
+              ("NAVIGATOR_TRACKPAD_ROTATION", "0"),
+          ):
+              pattern = rf"^#define\s+{name}\s+.*$"
+              replacement = f"#define {name} {value}"
+              if re.search(pattern, text, flags=re.MULTILINE):
+                  text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+              else:
+                  if text and not text.endswith("\n"):
+                      text += "\n"
+                  text += replacement + "\n"
+          config.write_text(text)
+
+          rules = layout / "rules.mk"
+          text = rules.read_text()
+          pattern = r"^MOUSE_SHARED_EP\s*=.*$"
+          if re.search(pattern, text, flags=re.MULTILINE):
+              text = re.sub(pattern, "MOUSE_SHARED_EP = yes", text, flags=re.MULTILINE)
+          else:
+              if text and not text.endswith("\n"):
+                  text += "\n"
+              text += "MOUSE_SHARED_EP = yes\n"
+          rules.write_text(text)
+          PY
+
+      - name: Save customized layout on main
+        run: |
+          git config --local user.name "github-actions"
+          git config --local user.email "github-actions@github.com"
+          git add "${{ github.event.inputs.layout_id }}"
+          git commit -m "✨(layout): Refresh from Oryx with custom QMK settings" || echo "No customized layout change"
+          git push origin HEAD:main
+
+      - name: Update QMK firmware submodule to matching version (${{ steps.download-layout-source.outputs.firmware_version }})
         run: |
           git submodule update --init --remote --depth=1 --no-single-branch
 
           cd qmk_firmware
-          git checkout -B firmware${{ steps.download-layout-source.outputs.firmware_version }} \
-            origin/firmware${{ steps.download-layout-source.outputs.firmware_version }}
+          git checkout -B "firmware${{ steps.download-layout-source.outputs.firmware_version }}" \
+            "origin/firmware${{ steps.download-layout-source.outputs.firmware_version }}"
           git submodule update --init --recursive
           cd ..
 
           git add qmk_firmware
           git commit -m "✨(qmk): Update firmware" || echo "No QMK change"
-          git push
+          git push origin HEAD:main
 
       - name: Install QMK-OpenRGB module
         if: ${{ github.event.inputs.layout_geometry == 'voyager' }}
@@ -116,22 +189,28 @@ jobs:
         run: |
           python3 scripts/patch-voyager-dual-hid.py qmk_firmware
 
-      - name: Validate Voyager OpenRGB and Oryx integration
+      - name: Validate Voyager custom integration
         if: ${{ github.event.inputs.layout_geometry == 'voyager' }}
         run: |
+          layout="${{ github.event.inputs.layout_id }}"
+
+          grep -q '"zsa/navigator_trackball"' "${layout}/keymap.json"
+          grep -q '"zsa/navigator_trackpad"' "${layout}/keymap.json"
+          grep -q '"openrgb"' "${layout}/keymap.json"
+          grep -q 'NAVIGATOR_TRACKBALL_ROTATION 325' "${layout}/config.h"
+          grep -q 'NAVIGATOR_TRACKPAD_ROTATION 0' "${layout}/config.h"
+          grep -q '^MOUSE_SHARED_EP = yes$' "${layout}/rules.mk"
+
           # Stock OpenRGB remains on QMK Raw HID / interface 1.
           grep -q 'void raw_hid_receive(uint8_t \*data, uint8_t length)' \
             qmk_firmware/modules/openrgb/openrgb.c
 
-          # ZSA Oryx gets its own 32-byte interface and transport.
+          # ZSA Oryx remains on the dedicated second HID interface.
           grep -q 'ORYX_INTERFACE' qmk_firmware/tmk_core/protocol/usb_descriptor.h
           grep -q 'USB_ENDPOINT_IN_ORYX' qmk_firmware/tmk_core/protocol/chibios/usb_endpoints.c
           grep -q 'oryx_hid_task' qmk_firmware/tmk_core/protocol/chibios/usb_main.c
           grep -q 'void oryx_hid_receive(uint8_t \*data, uint8_t length)' \
             qmk_firmware/modules/zsa/oryx/oryx.c
-
-          # The generated/custom layout must still opt into QMK-OpenRGB.
-          grep -q '"openrgb"' ${{ github.event.inputs.layout_id }}/keymap.json
 
       - name: Build qmk docker image
         run: docker build -t qmk .
@@ -139,7 +218,6 @@ jobs:
       - name: Build the layout
         id: build-layout
         run: |
-          # Set keyboard directory and make prefix based on firmware version
           if [ "${{ steps.download-layout-source.outputs.firmware_version }}" -ge 24 ]; then
             keyboard_directory="qmk_firmware/keyboards/zsa"
             make_prefix="zsa/"
@@ -148,13 +226,11 @@ jobs:
             make_prefix=""
           fi
 
-          # Copy layout files to the qmk folder
-          rm -rf ${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps/${{ github.event.inputs.layout_id }}
-          mkdir -p ${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps
-          cp -r ${{ github.event.inputs.layout_id }} \
-            ${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps/
+          rm -rf "${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps/${{ github.event.inputs.layout_id }}"
+          mkdir -p "${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps"
+          cp -r "${{ github.event.inputs.layout_id }}" \
+            "${keyboard_directory}/${{ github.event.inputs.layout_geometry }}/keymaps/"
 
-          # Build the layout
           docker run \
             -v ./qmk_firmware:/root \
             --rm \
@@ -167,7 +243,6 @@ jobs:
               make ${make_prefix}${{ github.event.inputs.layout_geometry }}:${{ github.event.inputs.layout_id }}
             "
 
-          # Find and export built layout
           normalized_layout_geometry="$(echo "${{ github.event.inputs.layout_geometry }}" | sed 's/\//_/g')"
 
           echo built_layout_file=$(find ./qmk_firmware \
@@ -182,3 +257,4 @@ jobs:
         with:
           name: ${{ steps.build-layout.outputs.normalized_layout_geometry }}_${{ github.event.inputs.layout_id }}
           path: ${{ steps.build-layout.outputs.built_layout_file }}
+          if-no-files-found: error
