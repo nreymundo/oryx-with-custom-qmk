@@ -23,6 +23,7 @@ on:
           - planck_ez
           - planck_ez/glow
         default: voyager
+  # Temporary self-test trigger. Remove after this migration build succeeds.
   push:
     branches:
       - main
@@ -84,6 +85,14 @@ jobs:
           echo "firmware_version=${firmware_version}" >> "$GITHUB_OUTPUT"
           echo "change_description=${change_description}" >> "$GITHUB_OUTPUT"
 
+      - name: Validate official dual Navigator configuration
+        if: ${{ env.LAYOUT_GEOMETRY == 'voyager' }}
+        run: |
+          # Dual Navigator support is now official ZSA/Oryx behavior. Do not
+          # synthesize either module here: the Oryx layout must own this config.
+          grep -q '"zsa/navigator_trackball"' "${LAYOUT_ID}/keymap.json"
+          grep -q '"zsa/navigator_trackpad"' "${LAYOUT_ID}/keymap.json"
+
       - name: Save pristine Oryx source
         env:
           CHANGE_DESCRIPTION: ${{ steps.download-layout-source.outputs.change_description }}
@@ -105,7 +114,7 @@ jobs:
           rm -rf "${LAYOUT_ID}"
           git checkout oryx -- "${LAYOUT_ID}"
 
-      - name: Apply Voyager custom configuration
+      - name: Apply OpenRGB integration
         if: ${{ env.LAYOUT_GEOMETRY == 'voyager' }}
         run: |
           python3 - <<'PY'
@@ -116,37 +125,17 @@ jobs:
 
           layout = Path(os.environ["LAYOUT_ID"])
 
+          # Oryx owns all Navigator modules and settings. Our only keymap-level
+          # module addition is QMK-OpenRGB.
           keymap_json = layout / "keymap.json"
           data = json.loads(keymap_json.read_text())
           modules = data.setdefault("modules", [])
-          for module in (
-              "zsa/oryx",
-              "zsa/navigator_trackball",
-              "zsa/navigator_trackpad",
-              "zsa/automouse",
-              "zsa/defaults",
-              "openrgb",
-          ):
-              if module not in modules:
-                  modules.append(module)
+          if "openrgb" not in modules:
+              modules.append("openrgb")
           keymap_json.write_text(json.dumps(data, indent=4) + "\n")
 
-          config = layout / "config.h"
-          text = config.read_text()
-          for name, value in (
-              ("NAVIGATOR_TRACKBALL_ROTATION", "325"),
-              ("NAVIGATOR_TRACKPAD_ROTATION", "0"),
-          ):
-              pattern = rf"^#define\s+{name}\s+.*$"
-              replacement = f"#define {name} {value}"
-              if re.search(pattern, text, flags=re.MULTILINE):
-                  text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
-              else:
-                  if text and not text.endswith("\n"):
-                      text += "\n"
-                  text += replacement + "\n"
-          config.write_text(text)
-
+          # OpenRGB plus the dedicated Oryx/Keymapp HID interface consumes one
+          # extra USB endpoint. Sharing QMK's mouse HID endpoint reclaims it.
           rules = layout / "rules.mk"
           text = rules.read_text()
           pattern = r"^MOUSE_SHARED_EP\s*=.*$"
@@ -164,7 +153,7 @@ jobs:
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
           git add "${LAYOUT_ID}"
-          git commit -m "✨(layout): Refresh from Oryx with custom QMK settings" || echo "No customized layout change"
+          git commit -m "✨(layout): Refresh from Oryx with OpenRGB integration" || echo "No customized layout change"
           git push origin HEAD:main
 
       - name: Update QMK firmware submodule to matching version (${{ steps.download-layout-source.outputs.firmware_version }})
@@ -192,19 +181,20 @@ jobs:
             qmk_firmware/modules/openrgb
           echo "QMK-OpenRGB commit: $(git -C qmk_firmware/modules/openrgb rev-parse HEAD)"
 
-      - name: Apply Voyager dual-HID patch
+      - name: Apply OpenRGB and Keymapp dual-HID patch
         if: ${{ env.LAYOUT_GEOMETRY == 'voyager' }}
         run: |
           python3 scripts/patch-voyager-dual-hid.py qmk_firmware
 
-      - name: Validate Voyager custom integration
+      - name: Validate Voyager OpenRGB integration
         if: ${{ env.LAYOUT_GEOMETRY == 'voyager' }}
         run: |
+          # Navigator modules must still be the ones provided by Oryx.
           grep -q '"zsa/navigator_trackball"' "${LAYOUT_ID}/keymap.json"
           grep -q '"zsa/navigator_trackpad"' "${LAYOUT_ID}/keymap.json"
+
+          # Our custom layer consists only of OpenRGB + transport/endpoint work.
           grep -q '"openrgb"' "${LAYOUT_ID}/keymap.json"
-          grep -q 'NAVIGATOR_TRACKBALL_ROTATION 325' "${LAYOUT_ID}/config.h"
-          grep -q 'NAVIGATOR_TRACKPAD_ROTATION 0' "${LAYOUT_ID}/config.h"
           grep -q '^MOUSE_SHARED_EP = yes$' "${LAYOUT_ID}/rules.mk"
 
           # Stock OpenRGB remains on QMK Raw HID / interface 1.
