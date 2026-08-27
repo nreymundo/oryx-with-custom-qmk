@@ -23,6 +23,12 @@ on:
           - planck_ez
           - planck_ez/glow
         default: voyager
+  # Temporary self-test trigger; removed after this verification run.
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/fetch-and-build-layout.yml
 
 env:
   QMK_OPENRGB_REF: module_revD
